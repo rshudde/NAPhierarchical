@@ -345,19 +345,6 @@ get_rho_comparison = function(prop_mean)
   return(list(rho = rho, BF =  BF))
 }
 
-
-# a = get_rho_comparison(0.1)
-# b = get_rho_comparison(0.3)
-# c = get_rho_comparison(0.5)
-# d = get_rho_comparison(0.7)
-# 
-# par(mfrow = c(2,2))
-# plot(a$rho, b$BF, type = "l", main = paste("log(BF) verses correlation value", 0.1), ylab = "BF value", xlab = "rho")
-# plot(b$rho, b$BF, type = "l", main = paste("log(BF) verses correlation value", 0.3), ylab = "BF value", xlab = "rho")
-# plot(c$rho, c$BF, type = "l", main = paste("log(BF) verses correlation value", 0.5), ylab = "BF value", xlab = "rho")
-# plot(d$rho, d$BF, type = "l", main = paste("log(BF) verses correlation value", 0.7), ylab = "BF value", xlab = "rho")
-
-
 par(mfrow = c(1,1))
 c = get_rho_comparison(0.7)
 plot(c$rho, c$BF, type = "l", main = paste("log(BF) verses correlation value", 0.5), ylab = "BF value", xlab = "rho")
