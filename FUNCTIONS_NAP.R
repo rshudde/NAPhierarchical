@@ -8,7 +8,7 @@ library(plotrix)
 library(magic)
 source("./RejectionSampler.R")
 # source('./JZS.r')
-# maybe i want to add a comment
+# blah
 
 ## to help visuMLize data
 rotate = function(x)
@@ -61,6 +61,7 @@ get_data = function(J, rho, p = 2, prop_mean = 0, sample_min = 4, sample_max = 1
   } else {
     nj = sample(sample_min:sample_max, J, replace = T)
   }
+  
   B = diag(p)
   Cj = list()
   Xj = list()
@@ -71,17 +72,18 @@ get_data = function(J, rho, p = 2, prop_mean = 0, sample_min = 4, sample_max = 1
   for (i in 1:J)
   {
     temp = matrix(rnorm(nj[i]*p), nrow = nj[i], ncol = p)
-    # temp = scale(temp)
-    # temp = sqrt(nj[i]/(nj[i] - 1))*temp
+    temp = scale(temp)
+    temp = sqrt(nj[i]/(nj[i] - 1))*temp
     Cj[[i]] = round(solve(crossprod(temp)),5)
     Xj[[i]] = temp
   }
   
   # generate parameters sigma2 and alpha
-  sigma2 = get_sigma2(1, 1)
+  # sigma2 = get_sigma2(1, 1)
   sigma2 = 1
-  alpha = c(rmvn(1, mu = rep(a, p), sigma2*B))
-
+  # alpha = mvtnorm::rmvnorm(n = 1, mean = rep(a, p), sigma = sigma2*B)
+  alpha = numeric(p)
+  
   # generate beta from local and non-local case
   beta = list()
   # if (generate_local)
@@ -101,12 +103,13 @@ get_data = function(J, rho, p = 2, prop_mean = 0, sample_min = 4, sample_max = 1
   # }
   
   #  draw correlated betas
+  sigmaBeta2 = .001
   for (i in 1:J)
   {
     corr = matrix(rho, nrow = p, ncol = p)
     diag(corr) = 1
     # temp = c(t(mvtnorm::rmvnorm(n = 1, mean = c(-prop_mean, prop_mean), sigma = (.1^2)*corr)))
-    temp = c(t(mvtnorm::rmvnorm(n = 1, mean = c(-prop_mean, prop_mean), sigma = corr)))
+    temp = c(t(mvtnorm::rmvnorm(n = 1, mean = c(-prop_mean, prop_mean), sigma = sigmaBeta2*corr)))
     
     beta[[i]] = temp
   }
@@ -116,7 +119,8 @@ get_data = function(J, rho, p = 2, prop_mean = 0, sample_min = 4, sample_max = 1
   yj = list()
   for (i in 1:J)
   {
-    temp = rmvn(1, mu = c(Xj[[i]] %*% beta[[i]]), Sigma = diag(sigma2, nrow = nj[i], ncol = nj[i]))
+    # temp = rmvn(1, mu = c(Xj[[i]] %*% beta[[i]]), Sigma = diag(sigma2, nrow = nj[i], ncol = nj[i]))
+    temp = rnorm(nj[i], c(Xj[[i]] %*% beta[[i]]), sqrt(sigma2))
     yj[[i]] = c(temp)
   }
   
@@ -132,11 +136,11 @@ get_m0 = function(data, tau2 = 0.09/2)
   Xj = data$Xj
   yj = data$yj
   # terms needed
-  N = sum(unlist(lapply(Xj, nrow)))
+  nj = unlist(lapply(Xj, nrow))
+  N = sum(nj)
   p = ncol(Xj[[1]])
   J = length(Xj)
   B = diag(p)
-  nj = unlist(lapply(Xj, nrow))
   Cj = get_Cj(Xj)
   a = rep(0, p)
   
@@ -168,7 +172,7 @@ get_m0 = function(data, tau2 = 0.09/2)
     temp = t(yj[[i]]) %*% solve(Dj[[i]]) %*% yj[[i]]
     temp_sum = temp_sum + temp
   }
-    
+  
   f = t(e) %*% E %*% e + temp_sum + t(a) %*% solve(B) %*% a
   f = as.numeric(f)
   
@@ -203,11 +207,11 @@ get_m1 = function(data, tau2 = 0.09/2)
   Xj = data$Xj
   yj = data$yj
   betaj = data$betaj
-  N = sum(unlist(lapply(Xj, nrow)))
+  nj = unlist(lapply(Xj, nrow))
+  N = sum(nj)
   J = length(Xj)
   p = ncol(Xj[[1]])
   B = diag(p)
-  nj = unlist(lapply(Xj, nrow))
   Cj = get_Cj(Xj)
   a = rep(0, p)
   
@@ -216,38 +220,22 @@ get_m1 = function(data, tau2 = 0.09/2)
   
   # starting definitinos for G and g
   G = matrix(0, nrow = p, ncol = p)
-  g = rep(0, p)
   for (i in 1:J)
   {
-    temp = crossprod(Xj[[i]]) 
+    temp = crossprod(Xj[[i]])
     G = G + temp
-    
-    y_star = c(yj[[i]]) - c(Xj[[i]] %*% betaj[[i]])
-    temp = crossprod(Xj[[i]], y_star)
-    g = g + temp
-    
   }
   G = G + solve(B)
-  g = g + solve(B) %*% a
-  
-  # definition of h
-  h = 0
-  for (i in 1:J)
-  {
-    y_star = c(yj[[i]]) - c(Xj[[i]] %*% betaj[[i]])
-    temp = crossprod(y_star) + (t(betaj[[i]]) %*% solve(Cj[[i]]) %*% betaj[[i]]) / (tau2*nj[[i]])
-    h = h + temp
-  }
-  h = h + t(g) %*% solve(G) %*% g + t(a) %*% solve(B) %*% a
-  h = as.numeric(h)
+  Ginv = solve(G)
   
   # redefinition for the stacked form (section 2.3)
   X = do.call(rbind, Xj)
   y = unlist(yj)
   XtX = lapply(Xj, crossprod) # list of X^TX
   XtX_whole = do.call(rbind, XtX) # stacked of XtX
-  Cj_inv = lapply(Cj, solve) # list of solve(C)
-
+  # Cj_inv = lapply(Cj, solve) # list of solve(C)
+  Cj_inv = XtX
+  
   # get M
   # start with getting the two diagonal poritons
   get_one = XtX[[1]]
@@ -260,7 +248,7 @@ get_m1 = function(data, tau2 = 0.09/2)
   }
   get_two = (1/tau2) * get_two
   
-  M = get_one + get_two + (XtX_whole) %*% solve(G) %*% t(XtX_whole)  # TODO - fix this inverse 
+  M = get_one + get_two + (XtX_whole %*% Ginv %*% t(XtX_whole))  # TODO - fix this inverse 
   M = round(M, 5)
   Minv = round(solve(M), 5) # inverse of M, rounded for the precision 
   
@@ -268,32 +256,35 @@ get_m1 = function(data, tau2 = 0.09/2)
   Xty = crossprod((Xj[[1]]), yj[[1]])
   for (i in 2:J)
   {
-    Xty = rbind(Xty, crossprod(Xj[[i]], yj[[i]]))
+    Xty = c(Xty, crossprod(Xj[[i]], yj[[i]]))
   }
   
-  m = Xty + XtX_whole %*% solve(G) %*% (t(X) %*% y + solve(B) %*% a)
+  m = Xty + (XtX_whole %*% Ginv %*% (t(X) %*% y + solve(B) %*% a))
   
   # get form for t distribution
-  mu = Minv %*% m
-  temp = (1/nu)*(crossprod(y) + t(crossprod(X,y) + solve(B) %*% a) %*% solve(G) %*% (crossprod(X,y) + solve(B) %*% a)
-          - t(m) %*% Minv %*% m + (t(a) %*% solve(B) %*% a)) 
-  Epsilon = as.numeric(temp) * Minv 
+  mu = c(Minv %*% m)
+  temp = (1/nu)*(sum(y^2) +
+                   t(crossprod(X,y) + solve(B) %*% a) %*% 
+                   Ginv %*% (crossprod(X,y) + solve(B) %*% a)
+                 - (t(m) %*% Minv %*% m) + (t(a) %*% solve(B) %*% a))
+  Epsilon = as.numeric(temp) * Minv
   # Epsilon = round(Epsilon, 5)
-    
+  
   
   
   top = 2^J * sterling_gamma(N/2 + J)
   C = prod(sqrt(unlist(lapply(Cj, det))))
-  bottom = pi^(N/2)*p^J*tau2^(-J*(p/2 + 1)) * sqrt(det(G)*det(B)*det(M))*C
-  const = top/bottom * (prod(nj))^(-p/2 + 1)
+  bottom = (pi^(N/2))*(p^J)*(tau2^(-J*(p/2 + 1)))*
+    sqrt(det(G)*det(B)*det(M))*C
+  const = (top/bottom) * (prod(nj))^(-(p/2 + 1))
   
   # sampler part
   values = 0
   max_rep = 1000
   for (i in 1:max_rep)
   {
-    sample = c(LaplacesDemon::rmvt(n = 1, mu = c(mu), S = Epsilon, df = nu))
-    sample = lapply(X = 1:J, FUN = function(X) {sample[((X -  1)*p + 1):(X*p)]})
+    sample = c(LaplacesDemon::rmvt(n = 1, mu = mu, S = Epsilon, df = nu))
+    sample = lapply(X = 1:J, FUN = function(X) {sample[((X-1)*p + 1):(X*p)]})
     values = values + evaluate_beta(sample, Cj)
   }
   
@@ -330,24 +321,32 @@ get_rho_comparison = function(prop_mean)
 {
   rho = seq(0, 1, by = 0.1)
   BF = vector(length = length(rho))
-  max_rep = 500
+  max_rep = 10
   for (i in 1:length(BF))
   {
-    tempBF = vector(length = max_rep)
-    for (j in 1:max_rep)
-    {
+    # tempBF = vector(length = max_rep)
+    # for (j in 1:max_rep)
+    # {
+    #   temp = get_data(J = 10, rho = rho[i], prop_mean = prop_mean, sample_min = 5, sample_max = 5)
+    #   tempBF[j] = get_BF(temp)
+    # }
+    # print(paste("finisehd rho at", rho[i]))
+    # BF[i] = mean(tempBF)
+    
+    doParallel::registerDoParallel(cores = 55)
+    tempBF = foreach::foreach(j = 1:max_rep, .combine = 'c', .multicombine = T) %dopar%{
+      
+      set.seed(j)
       temp = get_data(J = 10, rho = rho[i], prop_mean = prop_mean, sample_min = 5, sample_max = 5)
-      tempBF[j] = get_BF(temp)
+      
+      get_BF(temp)
     }
-    print(paste("finisehd rho at", rho[i]))
+    
     BF[i] = mean(tempBF)
+    print(rho[i])
   }
   return(list(rho = rho, BF =  BF))
 }
 
-par(mfrow = c(1,1))
-c = get_rho_comparison(0.7)
 plot(c$rho, c$BF, type = "l", main = paste("log(BF) verses correlation value", 0.5), ylab = "BF value", xlab = "rho")
-
-
-
+save(c, file = 'comp0.5.RData')
