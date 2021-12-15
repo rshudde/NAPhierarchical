@@ -6,7 +6,8 @@ library(BayesFactor)
 library(testit)
 library(plotrix)
 library(magic)
-source("./RejectionSampler.R")
+library(doParallel)
+# source("./RejectionSampler.R")
 # source('./JZS.r')
 # blah
 
@@ -50,7 +51,7 @@ get_Cj = function(Xj)
 
 # J = number of groups
 # p = number of covariates in each group
-get_data = function(J, rho, p = 2, prop_mean = 0, sample_min = 4, sample_max = 10, tau2 = 0.09/2, generate_local = FALSE)
+get_data = function(J, rho, p = 2, prop_mean = 0, sample_min = 10, sample_max = 10, tau2 = 0.09/2, generate_local = FALSE)
 {
   # check t oavoid singularity for solve(X^TX)
   if (sample_min <= p) warning("make sure minimum n <= p")
@@ -131,7 +132,48 @@ get_data = function(J, rho, p = 2, prop_mean = 0, sample_min = 4, sample_max = 1
               Xj = Xj))
 }
 
-get_m0 = function(data, tau2 = 0.09/2)
+# null marginal - not sure it's of any use 
+get_m0_OLD = function(data, tau2 = 0.09/2)
+{
+  Xj = data$Xj
+  yj = data$yj
+  betaj = data$betaj
+  nj = unlist(lapply(Xj, nrow))
+  N = sum(nj)
+  J = length(Xj)
+  p = ncol(Xj[[1]])
+  B = diag(p)
+  Binv = solve(B)
+  Cj = get_Cj(Xj)
+  a = rep(0, p)
+  
+  # starting definitinos for G and g
+  yty = lapply(yj, crossprod)
+  XtX = lapply(Xj, crossprod)
+  Xty = matrix(0, nrow = ncol(Xj[[1]]), ncol = 1)
+  for (i in 1:J)
+  {
+    Xty = Xty + crossprod(Xj[[i]], yj[[i]])
+  }
+  
+  XtX = Reduce('+', XtX) # sum of Xj^TXj
+  yty = sum(unlist(yty))
+  
+  # quantities needed
+  Q = XtX + solve(B)
+  b = Xty + solve(B) %*% a
+  M = yty + crossprod(a, solve(B)) %*% a - crossprod(b, solve(Q)) %*% b
+  
+  const = (2*pi)^(N/2)*(det(B)*det(Q))^(-1/2)*sterling_gamma(N/2)
+  quad = ((1/2)*M)^(-N/2)
+  
+  marginal = log(const*quad)
+  to_return = as.numeric(marginal)
+    
+  return(to_return)
+}
+
+get_mL = function(data, tau2 = 0.09/2, a = rep(0, p), B = diag(p), s = 3, r = 1)
 {
   Xj = data$Xj
   yj = data$yj
@@ -140,16 +182,14 @@ get_m0 = function(data, tau2 = 0.09/2)
   N = sum(nj)
   p = ncol(Xj[[1]])
   J = length(Xj)
-  B = diag(p)
   Cj = get_Cj(Xj)
-  a = rep(0, p)
+  Binv = solve(B)
   
   # calculate D
   Dj = list()
   for (i in 1:length(Xj))
   {
-    temp = diag(nj[[i]]) + tau2 * nj[[i]] * (Xj[[i]] %*% Cj[[i]] %*% t(Xj[[i]]))
-    Dj[[i]] = temp
+    Dj[[i]] = diag(nj[[i]]) + tau2 * nj[[i]] * (Xj[[i]] %*% Cj[[i]] %*% t(Xj[[i]]))
   }
   
   # calculate E and e
@@ -157,36 +197,31 @@ get_m0 = function(data, tau2 = 0.09/2)
   temp_sum_scalar = 0
   for (i in 1:length(Xj))
   {
-    temp = t(Xj[[i]]) %*% solve(Dj[[i]]) %*% Xj[[i]]
-    temp_sum = temp_sum + temp
-    
-    temp_sum_scalar = temp_sum_scalar + t(Xj[[i]]) %*% solve(Dj[[i]]) %*% yj[[i]]
+    Dinv = solve(Dj[[i]])
+    XDinv = crossprod(Xj[[i]], Dinv)
+    temp_sum = temp_sum + XDinv %*% Xj[[i]]
+    temp_sum_scalar = temp_sum_scalar + XDinv %*% yj[[i]]
   }
-  E = temp_sum + solve(B)
-  e = temp_sum_scalar + solve(B) %*% a
+  E = temp_sum + Binv
+  e = temp_sum_scalar + Binv %*% a
   
   # calculate f
   temp_sum = 0
   for (i in 1:length(Xj))
   {
-    temp = t(yj[[i]]) %*% solve(Dj[[i]]) %*% yj[[i]]
-    temp_sum = temp_sum + temp
+    temp_sum = temp_sum + crossprod(yj[[i]], solve(Dj[[i]])) %*% yj[[i]]
   }
   
-  f = t(e) %*% E %*% e + temp_sum + t(a) %*% solve(B) %*% a
-  f = as.numeric(f)
+  f = c(temp_sum - crossprod(e, solve(E)) %*% e + t(a) %*% solve(B) %*% a)
   
-  # constant calucation 
-  top = (2*pi)^(-N/2)*sterling_gamma(N/2)
-  D = prod(sqrt(unlist(lapply(Dj, det))))
-  bottom = sqrt( det(B) * det(E)) * D
-  const = top / bottom
-  
-  # marginal calculation
-  marginal = log(const) - (N/2)*log(f/2)
-  marginal = as.numeric(marginal)
-  
-  return(marginal)
+  top = -(N/2)*log(2*pi) + s*log(r) + lgamma(N/2 + s)
+  bottom =  lgamma(s) + (c(determinant(x = B, logarithm = T)$modulus) + c(determinant(x = E, logarithm = T)$modulus) +
+                           Reduce('+',lapply(X = Dj,FUN = function(X){c(determinant(x = X, logarithm = T)$modulus)})))/2
+  inner = (N/2 + s)*log(f/2 + r)
+
+  to_return = top - inner - bottom
+
+  return(to_return)
 }
 
 evaluate_beta = function(beta, Cj)
@@ -202,7 +237,7 @@ evaluate_beta = function(beta, Cj)
   return(to_return)
 }
 
-get_m1 = function(data, tau2 = 0.09/2)
+get_mNL_old = function(data, tau2 = 0.09/2)
 {
   Xj = data$Xj
   yj = data$yj
@@ -246,7 +281,7 @@ get_m1 = function(data, tau2 = 0.09/2)
     get_one = adiag(get_one, XtX[[i]])
     get_two = adiag(get_two, temp_two)
   }
-  get_two = (1/tau2) * get_two
+  get_two = (1/tau2) * get_two 
   
   M = get_one + get_two + (XtX_whole %*% Ginv %*% t(XtX_whole))  # TODO - fix this inverse 
   M = round(M, 5)
@@ -295,26 +330,126 @@ get_m1 = function(data, tau2 = 0.09/2)
   return(to_return)
 }
 
-get_BF = function(data, tau2 = 0.09/2)
+get_mNL = function(data, tau2 = 0.09/2)
 {
-  # get logs of each marginal
-  mL = get_m0(data, tau2 = 0.09/2)
-  mNL = get_m1(data, tau2 = 0.09/2)
+  Xj = data$Xj
+  yj = data$yj
+  betaj = data$betaj
+  nj = unlist(lapply(Xj, nrow))
+  N = sum(nj)
+  J = length(Xj)
+  p = ncol(Xj[[1]])
+  B = diag(p)
+  Cj = get_Cj(Xj)
+  a = rep(0, p)
   
-  # log BF is diffrence of non-local / local
-  to_return = mNL - mL
+  # some starting definitions 
+  nu = N + 2*J
+  
+  # starting definitinos for G and g
+  G = matrix(0, nrow = p, ncol = p)
+  g = matrix(0, nrow = ncol(Xj[[1]]), ncol = 1)
+  yty = 0
+  for (i in 1:J)
+  {
+    # getting G
+    temp = crossprod(Xj[[i]])
+    G = G + temp
+    
+    # getting g
+    temp = crossprod(Xj[[i]], yj[[i]] - Xj[[i]] %*% betaj[[i]])
+    g = g + g
+  }
+  G = G + solve(B)
+  Ginv = solve(G)
+  
+  # redefinition for the stacked form (section 2.3)
+  X = do.call(rbind, Xj)
+  y = unlist(yj)
+
+  # get M (equation 42)
+  # start with getting the two diagonal poritons
+  get_one = crossprod(Xj[[1]])
+  get_two = solve(Cj[[1]]) / nj[1]
+  XD = Xj[[1]]
+  for (i in 2:J)
+  {
+    get_one = adiag(get_one, crossprod(Xj[[1]])) # getting diag(X_1^TX_1, ..., X_J^TX_J)
+    get_two = adiag(get_two, solve(Cj[[i]]) / nj[i])
+    XD = adiag(XD, Xj[[i]])
+  }
+  get_two = (1/tau2) * get_two 
+  
+  M = get_one + get_two - crossprod(XD, X) %*% Ginv %*% t(X) %*% XD # CHANGED TO MINUS
+  M = round(M, 5)
+  Minv = round(solve(M), 5) # inverse of M, rounded for the precision 
+  
+  # get m (equation 43)
+  m = crossprod(XD, y) - crossprod(XD, X) %*% Ginv %*% (crossprod(X, y) + solve(B) %*% a) # CHANGED TO MINUS
+  
+  
+  # get form for t distribution, (equation 45-46)
+  mu = c(Minv %*% m)
+  temp = crossprod(X, y) + solve(B) %*% a
+  u = crossprod(y) - crossprod(temp, Ginv) %*% temp - crossprod(m, Minv) %*% m + crossprod(a, solve(B)) %*% a # CHNAGED TO MINUS
+  Epsilon = as.numeric(u) * (1/nu) * Minv
+  
+  
+  top = 2^J * sterling_gamma(nu/2) * tau2
+  Cdet = prod(sqrt(unlist(lapply(Cj, det))))
+  bottom = (pi^(N/2)) * (p^J) * u^(nu/2) * sqrt(det(G) * det(B) * det(M) * Cdet)
+  const = (top/bottom) * (prod(nj))^(-(p/2 + 1))
+  
+  # sampler part
+  values = 0
+  max_rep = 1000
+  for (i in 1:max_rep)
+  {
+    sample = c(LaplacesDemon::rmvt(n = 1, mu = mu, S = Epsilon, df = nu))
+    sample = lapply(X = 1:J, FUN = function(X) {sample[((X - 1)*p + 1):(X*p)]})
+    values = values + evaluate_beta(sample, Cj)
+  }
+  
+  int_part = values/max_rep
+  BF = const*int_part
+  to_return = as.numeric(log(BF))
+  
   return(to_return)
 }
 
+# bayes factors 
+get_BF_NL = function(data, tau2 = 0.09/2)
+{
+  # get logs of each marginal
+  null = get_m0(data, tau2 = 0.09/2)
+  alt = get_mNL(data, tau2 = 0.09/2)
+  
+  # log BF is diffrence of non-local / local
+  to_return = alt - null
+  return(to_return)
+}
 
-## etsting
-# data = get_data(J = 5, rho = 0.8, prop_mean = 0.3, sample_min = 3, sample_max = 3)
-# Xj = data$Xj
-# yj = data$yj
-# betaj = data$betaj
-# get_BF(data)
+get_BF_L = function(data, tau2 = 0.09/2)
+{
+  # get logs of each marginal
+  null = get_m0(data, tau2 = 0.09/2)
+  alt = get_mL(data, tau2 = 0.09/2)
+  
+  # log BF is diffrence of non-local / local
+  to_return = null - alt
+  return(to_return)
+}
 
-
+get_BF = function(data, tau2 = 0.09/2)
+{
+  # get logs of each marginal
+  null = get_mL(data, tau2 = 0.09/2)
+  alt = get_mNL(data, tau2 = 0.09/2)
+  
+  # log BF is diffrence of non-local / local
+  to_return = null - alt
+  return(to_return)
+}
 
 ######
 get_rho_comparison = function(prop_mean)
@@ -324,22 +459,13 @@ get_rho_comparison = function(prop_mean)
   max_rep = 10
   for (i in 1:length(BF))
   {
-    # tempBF = vector(length = max_rep)
-    # for (j in 1:max_rep)
-    # {
-    #   temp = get_data(J = 10, rho = rho[i], prop_mean = prop_mean, sample_min = 5, sample_max = 5)
-    #   tempBF[j] = get_BF(temp)
-    # }
-    # print(paste("finisehd rho at", rho[i]))
-    # BF[i] = mean(tempBF)
-    
-    doParallel::registerDoParallel(cores = 55)
+    doParallel::registerDoParallel(cores = 80)
     tempBF = foreach::foreach(j = 1:max_rep, .combine = 'c', .multicombine = T) %dopar%{
       
       set.seed(j)
       temp = get_data(J = 10, rho = rho[i], prop_mean = prop_mean, sample_min = 5, sample_max = 5)
       
-      get_BF(temp)
+      get_BF_NL(temp)
     }
     
     BF[i] = mean(tempBF)
@@ -348,5 +474,16 @@ get_rho_comparison = function(prop_mean)
   return(list(rho = rho, BF =  BF))
 }
 
-plot(c$rho, c$BF, type = "l", main = paste("log(BF) verses correlation value", 0.5), ylab = "BF value", xlab = "rho")
-save(c, file = 'comp0.5.RData')
+tau2 = 0.3^2/2
+set.seed(1)
+p = 2
+data = get_data(5, 0)
+print(paste("value of local marginal: ", round(get_mL(data))))
+print(paste("value of non-local marginal: ", round(get_mNL(data))))
+
+print(paste("__________BF_________"))
+print(get_BF(data))
+
+
+# c = get_rho_comparison(0.3)
+# plot(c$rho, c$BF, type = "l", main = paste("log(BF) verses correlation value", 0.5), ylab = "BF value", xlab = "rho")
